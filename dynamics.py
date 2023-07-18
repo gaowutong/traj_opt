@@ -1,10 +1,10 @@
 import numpy as np
-from numpy import sin, cos, sqrt, tanh
 from numpy.linalg import norm
 from numba.experimental import jitclass
-from numba import njit, float64, boolean
+from numba import float64, boolean
 
 from gravity import g, dgdr, d2gdr2
+from meoe import AB, dAB
 from throttle_function import throttle_tanh, throttle_tanh_deriv
 from state import Jacobian, Index as I
 
@@ -154,3 +154,66 @@ class LowThrustTwoBody():
         dPhidt = dFdX.jac_arr @ Phi
         xp = np.concatenate((dXdt, dPhidt.ravel()))
         return xp
+
+
+@jitclass([
+    ('mu', float64),
+    ('thrust_max', float64),
+    ('Isp', float64),
+    ('g0', float64),
+    ('c', float64),
+    ('rho', float64),
+])
+class LowThrustTwoBodyMEOE:
+    def __init__(self, mu, thrust_max, Isp, g0, rho=1):
+        self.mu = mu
+        self.thrust_max = thrust_max
+        self.Isp = Isp
+        self.g0 = g0
+        self.c = Isp * g0  # exhaust velocity [DU/TU]
+        self.rho = rho
+
+    def time_derivative(self, t, x):
+        Tmax = self.thrust_max
+        c = self.c
+        mu = self.mu
+
+        # state vector X
+        el = x[:6]
+        m = x[6]
+        lambda_el = x[7:13]
+        lambda_m = x[13]
+
+        A, B = AB(el, mu)
+        dA, dB = dAB(el, mu)
+
+        # switching function
+        p = -B.T @ lambda_el
+        sf = c * norm(p) / m + lambda_m - 1
+        # optimal throttle function (0-1) and thrust direction
+        # delta = 1 for sf > 0 and 0 for sf < 0
+        # but this is discontinuous, so we use tanh
+        # as a smooth approximation (see Ref[1])
+        delta = throttle_tanh(sf, self.rho)
+        u = -p / norm(p)
+        # define vector k
+        k = u * delta
+
+        thrust_acc = Tmax / m * k  # thrust acceleration vector
+
+        # dXdt
+        el_p = A + B @ thrust_acc
+        mp = -Tmax / c * delta
+        dB1 = dB[:, 0, :] * thrust_acc[0]
+        dB2 = dB[:, 1, :] * thrust_acc[1]
+        dB3 = dB[:, 2, :] * thrust_acc[2]
+        d_elp_del = dA + dB1 + dB2 + dB3
+        lambda_el_p = -d_elp_del.T @ lambda_el
+        lambda_m_p = -Tmax / m ** 2 * norm(p) * delta
+        dxdt = np.array([
+            *el_p,
+            mp,
+            *lambda_el_p,
+            lambda_m_p
+        ])
+        return dxdt

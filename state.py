@@ -22,14 +22,18 @@ class Index:
 
     # costate vector range
     l = range(7, 14)
-    
+
     # position-velocity vector range
     rv = range(0, 6)
+    # orbital elements vector range
+    mee = range(0, 6)
+    # orbital elements costate range
+    l_mee = range(7, 13)
 
     @staticmethod
     def i(row, col):
         return np.ix_(row, col)
-        
+
 
 class Jacobian:
     def __init__(self, arr):
